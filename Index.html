@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Amuri Juna Monitori</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#111111">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+body { font-family: Arial; padding:20px; background:#111; color:white; }
+button { padding:10px; font-size:16px; }
+#log { margin-top:20px; font-size:14px; }
+.log-entry { margin-bottom:6px; }
+.time { font-weight:bold; color:#00ffcc; }
+</style>
+</head>
+<body>
+
+<h2>🚆 Amuri Juna Monitori</h2>
+<button onclick="startMonitoring()">Käynnistä valvonta</button>
+
+<div id="log"></div>
+
+<script>
+
+const AMURI_LAT = 61.50290;
+const AMURI_LON = 23.74685;
+
+const ALERT_SECONDS = 120;
+const CHECK_INTERVAL = 15000;
+
+let alerted = new Set();
+let previousPositions = {};
+let previousDistances = {};
+
+function distanceKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2-lat1) * Math.PI/180;
+    const dLon = (lon2-lon1) * Math.PI/180;
+    const a =
+        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(lat1*Math.PI/180) *
+        Math.cos(lat2*Math.PI/180) *
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R*c;
+}
+
+function getDirection(trainId, lat, lon) {
+    if(!previousPositions[trainId]) {
+        previousPositions[trainId] = {lat, lon};
+        return "–";
+    }
+
+    const prev = previousPositions[trainId];
+    const dLat = lat - prev.lat;
+    const dLon = lon - prev.lon;
+    previousPositions[trainId] = {lat, lon};
+
+    if(Math.abs(dLon) > Math.abs(dLat)) {
+        return dLon > 0 ? "→ Itään" : "← Länteen";
+    } else {
+        return dLat > 0 ? "↑ Pohjoiseen" : "↓ Etelään";
+    }
+}
+
+function nowTime(){
+    return new Date().toLocaleTimeString("fi-FI");
+}
+
+async function checkTrains() {
+
+    const response = await fetch("https://rata.digitraffic.fi/api/v1/train-locations/latest/");
+    const trains = await response.json();
+
+    trains.forEach(train => {
+
+        const lat = train.location.coordinates[1];
+        const lon = train.location.coordinates[0];
+        const speed = train.speed;
+        const id = train.trainNumber + "-" + train.departureDate;
+
+        if(speed > 5){
+
+            const dist = distanceKm(AMURI_LAT, AMURI_LON, lat, lon);
+            const eta = (dist / speed) * 3600;
+
+            const direction = getDirection(id, lat, lon);
+
+            let approaching = false;
+            if(previousDistances[id] !== undefined){
+                if(dist < previousDistances[id]) approaching = true;
+            }
+            previousDistances[id] = dist;
+
+            if(eta <= ALERT_SECONDS && approaching && !alerted.has(id)){
+
+                const time = nowTime();
+
+                const message =
+                    "["+time+"] Juna "+train.trainNumber+
+                    " ("+train.trainCategory+") "+
+                    "ETA ~"+Math.round(eta)+" s "+direction;
+
+                if(Notification.permission === "granted"){
+                    new Notification("Juna lähestyy Amuria", {
+                        body: message
+                    });
+                }
+
+                document.getElementById("log").innerHTML +=
+                    "<div class='log-entry'><span class='time'>"+
+                    time+"</span> - "+
+                    train.trainNumber+" ("+
+                    train.trainCategory+") "+
+                    "ETA ~"+Math.round(eta)+" s "+
+                    direction+"</div>";
+
+                alerted.add(id);
+            }
+        }
+    });
+}
+
+function startMonitoring(){
+    Notification.requestPermission();
+    setInterval(checkTrains, CHECK_INTERVAL);
+    alert("Valvonta käynnissä 🚆");
+}
+
+// Rekisteröi service worker
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('service-worker.js');
+}
+
+</script>
+</body>
+</html>
